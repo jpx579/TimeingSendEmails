@@ -58,7 +58,9 @@ namespace TimeingSendEmails
 
                         Logger.Info($"人脸检测完成。结果: {(isDetected ? "发现人脸" : "未发现人脸")}, 图片已保存至: {filePath}");
 
-                        return (isDetected, filePath);
+                        string path = isDetected ? filePath : "未发现人脸";
+
+                        return (isDetected, path);
                     }
                 }
             }
