@@ -100,6 +100,13 @@ namespace TimeingSendEmails
             try
             {
                 Logger.Info($"准备发送邮件 (强制针对 IPv4 进行优化): {subject}");
+                Logger.Info($"检查配置: From={appConfig.FromEmail}, To={appConfig.ToEmail}");
+
+                if (string.IsNullOrWhiteSpace(appConfig.FromEmail) || !appConfig.FromEmail.Contains("@"))
+                {
+                    Logger.Error($"发件人邮箱格式非法: '{appConfig.FromEmail}'");
+                    return;
+                }
 
                 var addresses = await Dns.GetHostAddressesAsync("smtp.qq.com");
 
