@@ -102,8 +102,8 @@ namespace TimeingSendEmails
 
                 string subject = _config.Title;
                 string body = faceDetected
-                    ? $"【{msg}】现在我在电脑前工作，你也要加油哦！"
-                    : $"【{msg} {filePath}】现在我没在电脑前，可以视频联系我哈！";
+                    ? $"【{msg}】{_config.AtComputerDescription}"
+                    : $"【{msg} {filePath}】{_config.NotAtComputerDescription}";
 
                 Logger.Info(faceDetected ? "检测到人脸，准备发送正面邮件。" : "未检测到人脸，准备发送离座邮件。");
 
