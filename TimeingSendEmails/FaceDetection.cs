@@ -4,41 +4,68 @@ namespace TimeingSendEmails
 {
     public class FaceDetection
     {
-        string logPath = "Log.txt";
-        // 检测人脸方法
-        public (bool, string) DetectFace()
+        private readonly string _faceDataPath;
+        private readonly string _saveDirPath;
+
+        public FaceDetection()
         {
+            _faceDataPath = Path.Combine(Application.StartupPath, "Config", "haarcascade_frontalface_default.xml");
+            _saveDirPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "FaceImages");
+
+            if (!Directory.Exists(_saveDirPath))
+            {
+                Directory.CreateDirectory(_saveDirPath);
+            }
+        }
+
+        public (bool faceDetected, string filePath) DetectFace()
+        {
+            if (!File.Exists(_faceDataPath))
+            {
+                Logger.Error($"级联分类器文件丢失: {_faceDataPath}");
+                return (false, "人脸识别文件丢失");
+            }
+
             try
             {
                 using (var capture = new VideoCapture(0))
                 {
                     if (!capture.IsOpened())
                     {
-                        File.AppendAllText("相机被别的程序占用", logPath);
-                        return (false, null); // 摄像头未打开，可能被其他程序占用
+                        Logger.Error("摄像头启动失败：可能被其他程序占用或未连接。");
+                        return (false, "电脑摄像头启动失败");
                     }
-                    string appPath = Application.StartupPath;
-                    string path = Path.Combine(appPath, "Config\\haarcascade_frontalface_default.xml");
 
-                    var faceCascade = new CascadeClassifier(path); // 加载人脸检测的级联分类器
-                    Mat frame = new Mat(); // 创建一个 Mat 对象，用于存储图像帧
-                    capture.Read(frame); // 从摄像头读取一帧图像
+                    System.Threading.Thread.Sleep(200);
 
-                    var faces = faceCascade.DetectMultiScale(frame); // 检测人脸
+                    using (var frame = new Mat())
+                    using (var faceCascade = new CascadeClassifier(_faceDataPath))
+                    {
+                        capture.Read(frame);
+                        if (frame.Empty())
+                        {
+                            Logger.Error("未能从摄像头捕获到有效画面。");
+                            return (false, "未能从摄像头捕获到有效画面");
+                        }
 
-                    string filePath = $"D:\\jiapengxu\\TimeingSendEmailsApp\\FaceImages\\Faceimage.jpg"; // 保存的图片文件路径
-                    string baseDirectory = AppDomain.CurrentDomain.BaseDirectory;
-                    filePath = Path.Combine(baseDirectory, "Faceimage.jpg");
-                    frame.SaveImage(filePath); // 保存图像
-                    frame.Dispose();
-                    faceCascade.Dispose();
-                    return (faces.Length > 0, filePath); // 返回检测结果和保存的文件路径
+                        var faces = faceCascade.DetectMultiScale(frame);
+                        bool isDetected = faces.Length > 0;
+
+                        string fileName = $"Face_{DateTime.Now:yyyyMMdd_HHmmss}.jpg";
+                        string filePath = Path.Combine(_saveDirPath, fileName);
+
+                        frame.SaveImage(filePath);
+
+                        Logger.Info($"人脸检测完成。结果: {(isDetected ? "发现人脸" : "未发现人脸")}, 图片已保存至: {filePath}");
+
+                        return (isDetected, filePath);
+                    }
                 }
             }
             catch (Exception ex)
             {
-                File.AppendAllText($"获取人脸失败：{ex}", logPath);
-                return (false, null);
+                Logger.Error("执行人脸检测时发生异常", ex);
+                return (false, $"执行人脸检测时发生异常: {ex.Message}");
             }
         }
     }

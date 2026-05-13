@@ -6,106 +6,151 @@ namespace TimeingSendEmails
 {
     internal static class Program
     {
-        private static FaceDetection _faceDetection;
-        private static EmailSender _emailSender;
-        private static AppConfig _config;
-        private static NotifyIcon notifyIcon;
-        private static Timer _timer;
-        /// <summary>
-        ///  The main entry point for the application.
-        /// </summary>
+        private static FaceDetection _faceDetection = new FaceDetection();
+        private static EmailSender _emailSender = new EmailSender();
+        private static AppConfigModel _config = new AppConfigModel();
+        private static NotifyIcon _notifyIcon = new NotifyIcon();
+        private static Timer _timer = new Timer();
+        private static bool _isProcessing = false; // 防止重入锁
+
         [STAThread]
         static void Main()
         {
-            _faceDetection = new FaceDetection();
-            _emailSender = new EmailSender();
-            Init();
-            string icoPath = $"{Application.StartupPath}favicon.ico";
-            notifyIcon = new NotifyIcon
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+
+            Logger.Info("程序启动...");
+
+            try
             {
-                Text = "TimeingSendEmailsApp",
-                Icon = new Icon(icoPath),
+                Init();
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("初始化失败", ex);
+                MessageBox.Show("初始化失败，请检查配置和日志。");
+                return;
+            }
+
+            SetupNotifyIcon();
+
+            _timer = new Timer
+            {
+                Interval = Math.Max(_config.Interval, 1) * 1000
+            };
+            _timer.Tick += async (s, e) => await RunTaskWrapper();
+            _timer.Start();
+
+            Logger.Info($"定时器已启动，间隔: {_config.Interval}秒");
+            Application.Run();
+        }
+
+        private static void SetupNotifyIcon()
+        {
+            string icoPath = Path.Combine(Application.StartupPath, "favicon.ico");
+            _notifyIcon = new NotifyIcon
+            {
+                Text = "邮件定时监测程序",
+                Icon = File.Exists(icoPath) ? new Icon(icoPath) : SystemIcons.Application,
                 Visible = true
             };
 
-            // 创建右键菜单
             var contextMenu = new ContextMenuStrip();
-            contextMenu.Items.Add("Exit", null, Exit);
-            notifyIcon.ContextMenuStrip = contextMenu;
+            contextMenu.Items.Add("立即检测", null, async (s, e) => await RunTaskWrapper("手动触发"));
+            contextMenu.Items.Add("-");
+            contextMenu.Items.Add("退出", null, Exit);
+            _notifyIcon.ContextMenuStrip = contextMenu;
+        }
 
-            // 设置定时器
-            _timer = new Timer
+        private static void Init()
+        {
+            LoadConfig();
+            SetStartup();
+
+            SystemEvents.SessionEnding += TurnOffAndSendEmailsEvents;
+
+            _ = Task.Run(() => RunTaskWrapper("电脑开机"));
+        }
+
+        private static void LoadConfig()
+        {
+            string configPath = Path.Combine(Application.StartupPath, "Config", "AppConfig.json");
+            if (!File.Exists(configPath))
             {
-                Interval = _config.Interval * 1000  // 以秒为单位
-            };
-            _timer.Tick += Timer_Tick;
-            _timer.Start();
-            Application.Run();
+                throw new FileNotFoundException($"找不到配置文件: {configPath}");
+            }
+
+            string configJson = File.ReadAllText(configPath);
+            _config = JsonConvert.DeserializeObject<AppConfigModel>(configJson) ?? throw new Exception("配置文件解析失败");
+            Logger.Info("配置加载成功。");
+        }
+
+        private static async Task RunTaskWrapper(string msg = "正在工作")
+        {
+            if (_isProcessing)
+            {
+                Logger.Info("上次任务尚未结束，跳过本次触发。");
+                return;
+            }
+
+            _isProcessing = true;
+            try
+            {
+                Logger.Info($"开始检测流程: {msg}");
+
+                (bool faceDetected, string filePath) = _faceDetection.DetectFace();
+
+                string subject = _config.Title;
+                string body = faceDetected
+                    ? $"【{msg}】现在我在电脑前工作，你也要加油哦！"
+                    : $"【{msg} {filePath}】现在我没在电脑前，可以视频联系我哈！";
+
+                Logger.Info(faceDetected ? "检测到人脸，准备发送正面邮件。" : "未检测到人脸，准备发送离座邮件。");
+
+                await _emailSender.SendEmailAsync_IPV4(subject, body, _config, filePath);
+
+                Logger.Info("邮件发送成功。");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("任务执行过程中出错", ex);
+            }
+            finally
+            {
+                _isProcessing = false;
+            }
+        }
+
+        private static void TurnOffAndSendEmailsEvents(object sender, SessionEndingEventArgs e)
+        {
+            Logger.Info("接收到关机信号...");
+            RunTaskWrapper("电脑关机").GetAwaiter().GetResult();
+        }
+
+        private static void SetStartup()
+        {
+            try
+            {
+                string runKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(runKey, true)??throw new Exception("获取开机自启动注册表失败"))
+                {
+                    string path = $"\"{Application.ExecutablePath}\"";
+                    key.SetValue("TimeingSendEmails", path);
+                }
+                Logger.Info("开机自启注册表检查完成。");
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("设置自启失败（可能缺少权限）", ex);
+            }
         }
 
         private static void Exit(object sender, EventArgs e)
         {
-            notifyIcon.Visible = false;
+            Logger.Info("程序退出。");
+            _notifyIcon.Visible = false;
+            _timer.Stop();
             Application.Exit();
-        }
-        private static void Init()
-        {
-            LoadConfig();
-            // 确保程序在开机时自动启动
-            SetStartup();
-            // 立即发送一次邮件
-            RunFaceDetectionAndSendEmail("电脑开机");
-            // 关机事件处理
-            SystemEvents.SessionEnding += new SessionEndingEventHandler(TurnOffAndSendEmailsEvents);
-        }
-        private static void LoadConfig()
-        {
-            string configPath = Application.StartupPath + "Config\\AppConfig.json";
-            if (File.Exists(configPath))
-            {
-                string configJson = File.ReadAllText(configPath);
-                _config = JsonConvert.DeserializeObject<AppConfig>(configJson);
-            }
-            else
-            {
-                throw new FileNotFoundException("不存在config文件！");
-            }
-        }
-        private static void Timer_Tick(object sender, EventArgs e)
-        {
-            RunFaceDetectionAndSendEmail();
-        }
-        private static void TurnOffAndSendEmailsEvents(object sender, SessionEndingEventArgs e)
-        {
-            RunFaceDetectionAndSendEmail("电脑关机");
-        }
-        private static async void RunFaceDetectionAndSendEmail(string msg = "正在工作")
-        {
-            try
-            {
-                (bool faceDetected, string filePath) = _faceDetection.DetectFace();
-                if (faceDetected)
-                {
-                    _emailSender.SendEmail("连培旭，同学！", $"【{msg}】现在我在电脑前工作，你也要加油哦！", _config, filePath);
-                }
-                else
-                {
-                    _emailSender.SendEmail("连培旭，同学！", $"【{msg}】现在我没在电脑前，可以视频联系我哈！", _config, filePath);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error in RunFaceDetectionAndSendEmail: {ex.Message}");
-            }
-            finally { GC.Collect(); }
-        }
-        private static void SetStartup()
-        {
-            string runKey = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
-            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(runKey, true))
-            {
-                key.SetValue("TimeingSendEmails", "\"" + Application.ExecutablePath + "\"");
-            }
         }
     }
 }
